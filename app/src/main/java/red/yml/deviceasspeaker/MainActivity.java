@@ -2,10 +2,12 @@ package red.yml.deviceasspeaker;
 
 import androidx.appcompat.app.AppCompatActivity;
 
+import android.media.AudioAttributes;
+import android.media.AudioFormat;
+import android.media.AudioTrack;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.Looper;
 import android.util.Log;
 import android.view.View;
 import android.widget.EditText;
@@ -22,12 +24,15 @@ import java.nio.charset.StandardCharsets;
 //adb forward tcp:9500 tcp:9500
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
+    private static final int SAMPLE_RATE = 48000;
+    private static final int MIN_BUFFER_SIZE = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
     private EditText mMsgToSend;
     private TextView mLog;
     private InputStream mInputStream;
     private OutputStream mOutputStream;
     private ServerSocket mServer;
     private Handler mHandler;
+    private AudioTrack mAudioTrack;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -38,35 +43,60 @@ public class MainActivity extends AppCompatActivity {
         HandlerThread thread = new HandlerThread("socket looper");
         thread.start();
         mHandler = new Handler(thread.getLooper());
+        mLog.append("MIN_BUFFER_SIZE = " + MIN_BUFFER_SIZE + "\n");
+
+        mAudioTrack = new AudioTrack.Builder()
+                .setAudioAttributes(new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)//setUsage 设置 AudioTrack 的使用场景；
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)//setContentType 设置输入的音频文件内容的类型；
+                        .build())
+                .setAudioFormat(new AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)//采样格式
+                        .setSampleRate(SAMPLE_RATE)//设置采样率
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_STEREO)//设置声道
+                        .build())
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .setBufferSizeInBytes(MIN_BUFFER_SIZE)
+                .build();
 
         new Thread(() -> {
             try (ServerSocket serverSocket = new ServerSocket(9500)) {
                 mServer = serverSocket;
-                Log.i(TAG, "Connecting...");
-                log("Connecting...");
-                Socket client = mServer.accept();
-                try (InputStream inputStream = client.getInputStream();
-                     OutputStream outputStream = client.getOutputStream()) {
-                    log("Connected.");
-                    mInputStream = new BufferedInputStream(inputStream);
-                    mOutputStream = new BufferedOutputStream(outputStream);
+                while (!Thread.interrupted()) {
+                    Log.i(TAG, "Connecting...");
+                    log("Connecting...");
+                    Socket client = mServer.accept();
+                    try (InputStream inputStream = client.getInputStream();
+                         OutputStream outputStream = client.getOutputStream()) {
+                        log("Connected.");
+                        mInputStream = new BufferedInputStream(inputStream);
+                        mOutputStream = new BufferedOutputStream(outputStream);
 
-                    byte[] buffer = new byte[1024];
-                    while (!Thread.interrupted()) {
-                        int size = mInputStream.read(buffer);
-                        if (size <= 0) {
-                            break;
+                        mOutputStream.write((MIN_BUFFER_SIZE + "").getBytes(StandardCharsets.UTF_8));
+                        mOutputStream.flush();
+
+                        mAudioTrack.play();
+
+                        byte[] buffer = new byte[MIN_BUFFER_SIZE];
+                        while (!Thread.interrupted()) {
+                            int size = mInputStream.read(buffer);
+                            if (size <= 0) {
+                                break;
+                            }
+                            playStream(buffer, size);
                         }
-                        String msg = new String(buffer, 0, size, StandardCharsets.UTF_8);
-                        log("接收: " + msg);
+                        log("连接已断开。");
                     }
-                    log("连接已断开。");
                 }
             } catch (IOException e) {
                 Log.e(TAG, "onCreate: ", e);
                 log("Error: " + e.getLocalizedMessage());
             }
         }).start();
+    }
+
+    private void playStream(byte[] data, int len) {
+        mAudioTrack.write(data, 0, len);
     }
 
     private void log(String msg) {
